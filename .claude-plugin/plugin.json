@@ -31,7 +31,6 @@
   "agents": [
     "./agents/code-explorer.md"
   ],
-  "hooks": "./hooks/hooks.json",
   "mcpServers": {
     "beacon": {
       "command": "node",
