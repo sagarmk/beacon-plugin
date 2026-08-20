@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
+import { personalizedPageRank, buildFileGraph } from './graph.js';
 import {
   extractIdentifiers,
   prepareFTSQuery,
@@ -13,12 +14,34 @@ function float32Buffer(arr) {
   return Buffer.from(new Float32Array(arr).buffer);
 }
 
+function decodeEmbedding(buf) {
+  // Copy rather than view: the Buffer may sit at a non-zero offset inside a
+  // pooled allocation, which a bare Float32Array view would misread.
+  return new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+}
+
+function cosine(a, b) {
+  let dot = 0, na = 0, nb = 0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+  if (na === 0 || nb === 0) return 0;
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
 // sqlite-vec requires BigInt for primary key values
 function toBigInt(val) {
   return typeof val === 'bigint' ? val : BigInt(val);
 }
 
-const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
+
+// A path prefix is a literal, but LIKE treats _ and % as wildcards — and
+// underscores are ordinary in directory names, so --path src_gen/ silently
+// matched src/gen/ as well. The vector half of a hybrid search filters with
+// startsWith(), so without this the two halves applied different path filters.
+function likePrefix(prefix) {
+  return String(prefix).replace(/[\\%_]/g, c => '\\' + c) + '%';
+}
 
 export class BeaconDatabase {
   constructor(dbPath, dimensions) {
@@ -64,11 +87,15 @@ export class BeaconDatabase {
 
     // Migrate to schema v2: add identifiers column + FTS5 table
     this._migrateToV2();
+    // Migrate to schema v3: symbol/reference tables for the file graph
+    this._migrateToV3();
   }
 
   _migrateToV2() {
     const currentVersion = parseInt(this.getSyncState('schema_version') || '1', 10);
-    if (currentVersion >= SCHEMA_VERSION) return;
+    // Guard on 2 specifically, not SCHEMA_VERSION: this backfills all of FTS,
+    // so a later version bump must not drag it along and duplicate every row.
+    if (currentVersion >= 2) return;
 
     // Add identifiers column if missing
     const cols = this.db.pragma('table_info(chunks)');
@@ -107,7 +134,101 @@ export class BeaconDatabase {
       backfill();
     }
 
-    this.setSyncState('schema_version', String(SCHEMA_VERSION));
+    this.setSyncState('schema_version', '2');
+  }
+
+  // v3: symbol definitions and references, for the file reference graph.
+  // No backfill is possible — definitions come from source text that the index
+  // does not retain verbatim per file — so the tables start empty and the graph
+  // signal simply contributes nothing until the next reindex.
+  _migrateToV3() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS symbols (
+        file_path TEXT NOT NULL,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        line INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS refs (
+        file_path TEXT NOT NULL,
+        name TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
+      CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path);
+      CREATE INDEX IF NOT EXISTS idx_refs_file ON refs(file_path);
+      CREATE INDEX IF NOT EXISTS idx_refs_name ON refs(name);
+    `);
+    const currentVersion = parseInt(this.getSyncState('schema_version') || '1', 10);
+    if (currentVersion < 3) this.setSyncState('schema_version', '3');
+  }
+
+  /**
+   * Replace every symbol and reference recorded for one file. Keyed on
+   * file_path so it rides along with the existing per-file delete lifecycle.
+   */
+  replaceFileSymbols(filePath, definitions, references) {
+    const tx = this.db.transaction((fp, defs, refs) => {
+      this.db.prepare('DELETE FROM symbols WHERE file_path = ?').run(fp);
+      this.db.prepare('DELETE FROM refs WHERE file_path = ?').run(fp);
+      const insDef = this.db.prepare('INSERT INTO symbols (file_path, name, kind, line) VALUES (?, ?, ?, ?)');
+      for (const d of defs) insDef.run(fp, d.name, d.kind, d.line | 0);
+      const insRef = this.db.prepare('INSERT INTO refs (file_path, name) VALUES (?, ?)');
+      for (const r of refs) insRef.run(fp, r);
+    });
+    tx(filePath, definitions || [], references || []);
+  }
+
+  /** Everything needed to build the file graph, in two queries. */
+  getGraphData() {
+    const refsByFile = new Map();
+    for (const r of this.db.prepare('SELECT file_path, name FROM refs').all()) {
+      let set = refsByFile.get(r.file_path);
+      if (!set) { set = new Set(); refsByFile.set(r.file_path, set); }
+      set.add(r.name);
+    }
+    const definitionsByName = new Map();
+    for (const r of this.db.prepare('SELECT DISTINCT file_path, name FROM symbols').all()) {
+      let arr = definitionsByName.get(r.name);
+      if (!arr) { arr = []; definitionsByName.set(r.name, arr); }
+      arr.push(r.file_path);
+    }
+    return { refsByFile, definitionsByName };
+  }
+
+  /** Files defining any of these symbol names. */
+  filesDefining(names) {
+    if (!names || names.length === 0) return [];
+    const marks = names.map(() => '?').join(',');
+    return this.db.prepare(
+      `SELECT DISTINCT file_path, name FROM symbols WHERE name IN (${marks})`
+    ).all(...names);
+  }
+
+  /** Every place a symbol name is referenced. */
+  referencesTo(name) {
+    return this.db.prepare(
+      'SELECT DISTINCT file_path FROM refs WHERE name = ? ORDER BY file_path'
+    ).all(name).map(r => r.file_path);
+  }
+
+  /** Declared symbols in one file, in source order. */
+  symbolsInFile(filePath) {
+    return this.db.prepare(
+      'SELECT name, kind, line FROM symbols WHERE file_path = ? ORDER BY line'
+    ).all(filePath);
+  }
+
+  /** Files whose path contains this fragment — for resolving a partial path. */
+  filesMatching(fragment) {
+    return this.db.prepare(
+      "SELECT DISTINCT file_path FROM chunks WHERE file_path LIKE ? ESCAPE '\\' ORDER BY file_path LIMIT 20"
+    ).all('%' + String(fragment).replace(/[\\%_]/g, c => '\\' + c) + '%').map(r => r.file_path);
+  }
+
+  hasSymbolGraph() {
+    try {
+      return this.db.prepare('SELECT 1 FROM symbols LIMIT 1').get() !== undefined;
+    } catch { return false; }
   }
 
   upsertChunk(filePath, chunkIndex, chunkText, startLine, endLine, embedding, fileHash, identifiers) {
@@ -179,6 +300,8 @@ export class BeaconDatabase {
         this.db.prepare('DELETE FROM chunks_vec WHERE chunk_id = ?').run(toBigInt(row.id));
       }
       this.db.prepare('DELETE FROM chunks WHERE file_path = ?').run(fp);
+      this.db.prepare('DELETE FROM symbols WHERE file_path = ?').run(fp);
+      this.db.prepare('DELETE FROM refs WHERE file_path = ?').run(fp);
     });
     deleteTransaction(filePath);
   }
@@ -306,6 +429,59 @@ export class BeaconDatabase {
       });
     }
 
+    // Symbol-graph reranking: promote files that the current best matches
+    // structurally depend on. A function with no doc comment has almost no
+    // natural-language surface, so no embedding will surface it directly — but
+    // whatever calls it usually is retrievable, and sits one reference edge
+    // away. Seeding PageRank on the top hits walks that edge.
+    const wGraph = hybrid.weight_graph ?? 0;
+    if (wGraph > 0 && scored.length > 0) {
+      const ppr = this._graphRanks(scored, hybrid.graph_seeds ?? 5, hybrid.graph_damping);
+      if (ppr.size > 0) {
+        for (const s of scored) {
+          const p = ppr.get(s.filePath);
+          if (!p) continue;
+          const graphBoost = 1 + wGraph * p;
+          s.score *= graphBoost;
+          if (s._debug) s._debug.graphBoost = graphBoost;
+        }
+
+        // Boosting alone can only reorder what retrieval already found. The
+        // case this signal exists for — a function with no prose surface —
+        // never enters the candidate pool at all, so it cannot be reordered
+        // into view. Pull in the files the graph reaches that neither vector
+        // nor keyword search returned, and let them compete on real similarity.
+        const present = new Set(scored.map(s => s.filePath));
+        const reached = [...ppr.entries()]
+          .filter(([f, p]) => !present.has(f) && p >= (hybrid.graph_expand_min ?? 0.05))
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, hybrid.graph_expand ?? 3);
+
+        for (const [filePath, p] of reached) {
+          for (const c of this._bestChunksFor(filePath, queryEmbedding, 1)) {
+            scored.push({
+              filePath: c.filePath,
+              chunkText: c.chunkText,
+              startLine: c.startLine,
+              endLine: c.endLine,
+              similarity: c.similarity,
+              // Justified by structure, not by similarity — so it must be
+              // exempt from the similarity floor below, which exists to drop
+              // weak *semantic* matches. Expansion deliberately surfaces code
+              // the embedding rates poorly; applying the floor here would
+              // discard precisely what the graph was used to find.
+              viaGraph: true,
+              // Scored on the same scale as everything else: its own vector
+              // similarity, then the same graph boost the others received.
+              score: wVec * c.similarity * getFileTypeMultiplier(c.filePath)
+                     * getIdentifierBoost(queryText, c.chunkText) * (1 + wGraph * p),
+              ...(debug ? { _debug: { viaGraph: true, ppr: p, vecSimilarity: c.similarity } } : {}),
+            });
+          }
+        }
+      }
+    }
+
     // File-frequency reranking: files with more matching chunks get a cumulative boost
     const fileHits = new Map();
     for (const s of scored) {
@@ -323,7 +499,8 @@ export class BeaconDatabase {
     // Sort by fused score descending, filter by threshold on similarity (if available), take top K
     return scored
       .sort((a, b) => b.score - a.score)
-      .filter(r => r.similarity >= threshold || (r.similarity === 0 && r.score > 0))
+      .filter(r => r.viaGraph || r.similarity >= threshold || (r.similarity === 0 && r.score > 0))
+      .map(({ viaGraph, ...r }) => r)
       .slice(0, topK);
   }
 
@@ -415,10 +592,10 @@ export class BeaconDatabase {
           FROM chunks_fts
           JOIN chunks ON chunks.id = chunks_fts.rowid
           WHERE chunks_fts MATCH ?
-            AND chunks.file_path LIKE ?
+            AND chunks.file_path LIKE ? ESCAPE '\\'
           ORDER BY chunks_fts.rank
           LIMIT ?
-        `).all(ftsQuery, pathPrefix + '%', limit);
+        `).all(ftsQuery, likePrefix(pathPrefix), limit);
       } else {
         results = this.db.prepare(`
           SELECT
@@ -448,6 +625,55 @@ export class BeaconDatabase {
       console.error(`Beacon: FTS query failed (${ftsQuery}): ${err.message}`);
       return [];
     }
+  }
+
+  // Built once per connection: a query-time rebuild would re-read every symbol
+  // and reference row on each search.
+  _fileGraph(damping) {
+    const key = damping || 'sqrt';
+    if (this._graphCacheKey === key && this._graphCache !== undefined) return this._graphCache;
+    if (!this.hasSymbolGraph()) { this._graphCacheKey = key; this._graphCache = null; return null; }
+    const { refsByFile, definitionsByName } = this.getGraphData();
+    this._graphCacheKey = key;
+    this._graphCache = buildFileGraph(refsByFile, definitionsByName, key);
+    return this._graphCache;
+  }
+
+  /**
+   * Personalized PageRank seeded on the strongest current matches, weighted by
+   * their score so a marginal hit does not pull the walk as hard as a good one.
+   */
+  _graphRanks(scored, seedCount, damping) {
+    const edges = this._fileGraph(damping);
+    if (!edges || edges.size === 0) return new Map();
+
+    const best = new Map();
+    for (const s of scored) {
+      const prev = best.get(s.filePath);
+      if (prev === undefined || s.score > prev) best.set(s.filePath, s.score);
+    }
+    const seeds = new Map(
+      [...best.entries()].sort((a, b) => b[1] - a[1]).slice(0, seedCount).filter(e => e[1] > 0)
+    );
+    if (seeds.size === 0) return new Map();
+    return personalizedPageRank(edges, seeds);
+  }
+
+  /** Best chunks of one file against a query embedding, scored in JS. */
+  _bestChunksFor(filePath, queryEmbedding, limit) {
+    const rows = this.db.prepare(
+      'SELECT chunk_text, start_line, end_line, embedding FROM chunks WHERE file_path = ?'
+    ).all(filePath);
+    return rows
+      .map(r => ({
+        filePath,
+        chunkText: r.chunk_text,
+        startLine: r.start_line,
+        endLine: r.end_line,
+        similarity: cosine(queryEmbedding, decodeEmbedding(r.embedding)),
+      }))
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, limit);
   }
 
   getIndexedFiles() {

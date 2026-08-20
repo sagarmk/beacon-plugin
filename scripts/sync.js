@@ -6,10 +6,11 @@ import { openDatabase } from './lib/open-db.js';
 import { Embedder } from './lib/embedder.js';
 import { chunkCode } from './lib/chunker.js';
 import { loadConfig } from './lib/config.js';
-import { getRepoFiles, getFileHash, getModifiedFilesSince } from './lib/git.js';
+import { getRepoFiles, getFileHash, getModifiedFilesSince, resolveRepoPath, isGitRepo } from './lib/git.js';
 import { shouldIndex } from './lib/ignore.js';
 import { extractIdentifiers } from './lib/tokenizer.js';
-import { isCwdBlacklisted } from './lib/safety.js';
+import { extractDefinitions, extractReferences } from './lib/symbols.js';
+import { isCwdBlacklisted, isCwdWhitelisted } from './lib/safety.js';
 import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync } from 'fs';
 import path from 'path';
 
@@ -20,10 +21,23 @@ if (isCwdBlacklisted()) {
 }
 
 const config = loadConfig();
+const forced = process.argv.includes('--force');
 
 // Auto-index check (skip if called with --force from /run-indexer)
-if (!process.argv.includes('--force') && config.indexing.auto_index === false) {
+if (!forced && config.indexing.auto_index === false) {
   console.log('Beacon: auto-index is off. Use /run-indexer to index manually.');
+  process.exit(0);
+}
+
+// Only auto-index actual projects. Without this, starting a session anywhere —
+// a home directory, Documents, Downloads — silently recursively walked and
+// embedded the lot, because the blacklist only ever matched the cwd exactly and
+// so never covered anything beneath a blacklisted path. A git repo is the
+// signal that a directory is a project someone means to index; /run-indexer
+// (--force) and the whitelist stay available for projects that are not.
+if (!forced && !isGitRepo() && !isCwdWhitelisted()) {
+  console.log('Beacon: not a git repository — skipping auto-index.');
+  console.log('Beacon: use /run-indexer to index it anyway, or /whitelist to always index it.');
   process.exit(0);
 }
 
@@ -108,20 +122,43 @@ try {
 
   const concurrency = config.indexing.concurrency || 4;
 
-  if (stats.fileCount === 0) {
-    // ── FIRST RUN: full index ──
-    console.log('Beacon: first run detected — indexing entire repo...');
+  // Branch on whether the initial index ever FINISHED, not on whether any rows
+  // exist. A first index that was killed partway (closing the session during
+  // the first sync of a big repo — the normal case, not an edge case) leaves
+  // rows behind but no last_sync_time, and the incremental branch would then
+  // find nothing to do and report "up to date" forever, with the repo only
+  // partly indexed and search silently answering from the half it has.
+  const initialDone = db.getSyncState('initial_index_complete') === '1';
 
+  if (!initialDone) {
+    // ── FIRST RUN (or an interrupted one): full index ──
     const maxFiles = config.indexing.max_files || 10000;
     const allFiles = getRepoFiles(maxFiles).filter(f => shouldIndex(f, config));
 
-    db.setSyncState('sync_total_files', String(allFiles.length));
+    // Resume cheaply: anything already embedded at its current hash is skipped,
+    // so a killed index picks up roughly where it stopped instead of re-paying
+    // for the whole repo.
+    const pending = allFiles.filter(f => {
+      try { return getFileHash(f) !== db.getFileHash(f); } catch { return true; }
+    });
+    const done = allFiles.length - pending.length;
+
+    console.log(done > 0
+      ? `Beacon: resuming interrupted index — ${done} file(s) already done, ${pending.length} to go...`
+      : 'Beacon: first run detected — indexing entire repo...');
+
+    db.setSyncState('sync_total_files', String(pending.length));
     db.setSyncState('sync_completed_files', '0');
 
-    const result = await indexFilesConcurrently(allFiles, concurrency);
+    const result = await indexFilesConcurrently(pending, concurrency);
 
     if (result.failed > 0) console.warn(`Beacon: ${result.failed} file(s) failed to index.`);
-    console.log(`Beacon: initial index complete — ${result.indexed} files, ${db.getStats().chunkCount} chunks`);
+    // Only call the initial index complete when nothing was left behind —
+    // otherwise the failures are retried next session rather than written off.
+    if (result.failed === 0) db.setSyncState('initial_index_complete', '1');
+    else console.warn('Beacon: initial index incomplete — will retry the failures next session.');
+
+    console.log(`Beacon: initial index complete — ${db.getStats().fileCount} files, ${db.getStats().chunkCount} chunks`);
   } else {
     // ── INCREMENTAL SYNC: only changed files ──
     const changedFiles = lastSyncTime
@@ -136,7 +173,7 @@ try {
       // Handle deletions synchronously, collect files needing re-index
       const toIndex = [];
       for (const filePath of changedFiles) {
-        if (!existsSync(filePath)) {
+        if (!existsSync(resolveRepoPath(filePath))) {
           db.deleteFileChunks(filePath);
         } else {
           const currentHash = getFileHash(filePath);
@@ -181,11 +218,15 @@ try {
  * Returns null if the file has no chunks (e.g., empty or binary).
  */
 function prepareFile(filePath) {
-  const content = readFileSync(filePath, 'utf-8');
+  const content = readFileSync(resolveRepoPath(filePath), 'utf-8');
   const fileHash = getFileHash(filePath);
   const chunks = chunkCode(content, filePath, config);
   if (chunks.length === 0) return null;
-  return { filePath, fileHash, chunks };
+  // Symbols come from the whole file, not per chunk — the graph is file-level,
+  // and a definition split across a chunk boundary would otherwise be lost.
+  const definitions = extractDefinitions(content, filePath);
+  const references = extractReferences(content, filePath, definitions.map(d => d.name));
+  return { filePath, fileHash, chunks, definitions, references };
 }
 
 /**
@@ -206,6 +247,7 @@ function commitFileToDb(prepared, embeddings, startIdx) {
     );
   }
   db.deleteOrphanChunks(prepared.filePath, prepared.chunks.length - 1);
+  db.replaceFileSymbols(prepared.filePath, prepared.definitions, prepared.references);
 }
 
 /**
