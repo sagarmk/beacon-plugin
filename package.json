@@ -2,14 +2,14 @@
   "name": "beacon",
   "version": "1.0.0",
   "type": "module",
-  "description": "Beacon — semantic code search for Claude Code",
+  "description": "Beacon \u2014 semantic code search for Claude Code",
   "scripts": {
     "sync": "node scripts/sync.js",
     "search": "node scripts/search.js",
     "status": "node scripts/status.js",
     "gc": "node scripts/gc.js",
-    "benchmark": "node reports/workflow_benchmark.js",
-    "test": "vitest"
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",
@@ -26,7 +26,13 @@
     "url": "https://github.com/sagarmk/beacon-plugin"
   },
   "homepage": "https://github.com/sagarmk/beacon-plugin",
-  "keywords": ["claude-code", "claude-code-plugin", "semantic-search", "code-search", "embeddings"],
+  "keywords": [
+    "claude-code",
+    "claude-code-plugin",
+    "semantic-search",
+    "code-search",
+    "embeddings"
+  ],
   "files": [
     "package.json",
     "package-lock.json",
