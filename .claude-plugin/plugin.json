@@ -6,8 +6,8 @@
     "name": "Sagar MK"
   },
   "license": "MIT",
-  "repository": "https://github.com/sagarmk/Claude-Code-Beacon-Plugin",
-  "homepage": "https://github.com/sagarmk/Claude-Code-Beacon-Plugin",
+  "repository": "https://github.com/sagarmk/beacon-plugin",
+  "homepage": "https://github.com/sagarmk/beacon-plugin",
   "keywords": [
     "claude-code",
     "semantic-search",

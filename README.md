@@ -20,7 +20,9 @@
 </p>
 
 <p align="center">
-  <strong>98.3% accuracy · 5x faster than grep · 20-query benchmark on a real codebase</strong>
+  <strong>98.3% accuracy · 5x faster than grep</strong><br>
+  <sub>Author's 20-query benchmark on one codebase. Numbers depend heavily on corpus and query style —<br>
+  measure on your own repo before relying on them. See <a href="#retrieval-quality">Retrieval quality</a>.</sub>
 </p>
 
 ---
@@ -32,14 +34,14 @@
 ```bash
 brew install ollama
 ollama serve &
-ollama pull nomic-embed-text
+ollama pull qwen3-embedding:0.6b
 ```
 
 ### 2. Install the Beacon plugin
 
 ```bash
-claude plugin marketplace add sagarmk/Claude-Code-Beacon-Plugin
-claude plugin install beacon@claude-code-beacon-plugin
+claude plugin marketplace add sagarmk/beacon-plugin
+claude plugin install beacon@beacon-plugin
 ```
 
 ### 3. Start Claude Code
@@ -75,8 +77,8 @@ Deletes existing embeddings and rebuilds from scratch — useful after switching
 ```
 Beacon Index
 
-● ● ● ● ●    nomic-embed-text · Ollama (local)
-● ● ● ● ●    768 dims · 3.8 MB
+● ● ● ● ●    qwen3-embedding:0.6b · Ollama (local)
+● ● ● ● ●    1024 dims · 3.8 MB
 ● ● ● ● ●
 ● ● ● ● ●    Coverage: 100% (38/38 files)
 
@@ -102,7 +104,7 @@ For a quick numeric summary:
   "files_indexed": 38,
   "total_chunks": 114,
   "last_sync": "2026-03-01T04:30:21.453Z",
-  "embedding_model": "nomic-embed-text",
+  "embedding_model": "qwen3-embedding:0.6b",
   "embedding_endpoint": "http://localhost:11434/v1"
 }
 ```
@@ -132,9 +134,66 @@ For a quick numeric summary:
 ]
 ```
 
-Hybrid search combines **semantic similarity** (understands meaning), **BM25 keyword matching**, and **identifier boosting** — so searching "auth flow" finds code about authentication even if it never uses the word "auth".
+Hybrid search combines **semantic similarity** (understands meaning), **BM25 keyword matching**, **identifier boosting**, and a **symbol reference graph** — so searching "auth flow" finds code about authentication even if it never uses the word "auth".
 
 Options: `--top-k N` (results count), `--threshold F` (min score), `--path <dir>` (scope to directory), `--no-hybrid` (pure vector search).
+
+---
+
+## Tools Claude uses
+
+Beacon ships an MCP server, so Claude picks the right tool for the question
+instead of grepping and hoping. Three of these never run the embedding model at
+all — they are indexed lookups over the symbol tables.
+
+| Tool | For | Cost |
+|---|---|---|
+| `find_symbol(name)` | Where a symbol is **defined** | ~0.01 ms, exact |
+| `find_references(name)` | **Every call site** — exhaustive, not a ranked sample | ~0.01 ms |
+| `outline(file)` | A file's symbols with line numbers | ~0.01 ms |
+| `search_code(query)` | Code matching a description you can't name | ~200 ms, ranked |
+| `index_status()` | Index health, when results look stale | ~0.01 ms |
+
+`find_references` is the one worth knowing about: it is exhaustive over indexed
+files, so it is the only correct tool for *"what breaks if I change this"*.
+Ranked search returns a sample and will quietly miss call sites.
+
+`search_code` also takes `mode: "lexical"` (keyword only, skips the embedding
+model entirely) and `mode: "semantic"` (embeddings only).
+
+**Grep is still the right tool** for literal text, regex, case-sensitive
+matches, and anything outside the index — `node_modules`, `dist`, lockfiles,
+`.env`. Beacon leaves those alone.
+
+---
+
+## Retrieval quality
+
+The symbol graph exists because embeddings are blind to structure. A function
+with no doc comment has almost no natural-language surface, so no phrasing
+reaches it — but whatever calls it usually is retrievable, one reference edge
+away. Personalized PageRank seeded on the current best matches walks that edge.
+
+Measured on this repo, 12 natural-language queries with no lexical overlap with
+their targets:
+
+| | top-1 | MRR |
+|---|---|---|
+| Vector only | 5/12 | 0.552 |
+| Hybrid, no graph | 7/12 | 0.722 |
+| **Hybrid + symbol graph** | **9/12** | **0.813** |
+
+Two caveats worth stating plainly:
+
+- **Twelve queries on one repo is a small sample.** Treat the direction as
+  meaningful and the exact numbers as noisy.
+- **Hybrid weights are a deliberate compromise.** Dropping BM25 scores better on
+  prose queries (0.813) and much worse on exact-identifier lookup (0.563 vs
+  0.988 on a 40-query benchmark). The shipped `.4 / .3 / .3` split is the only
+  configuration that holds up on both.
+
+Run `search.js` with `search.hybrid.debug: true` in `.claude/beacon.json` to see
+every scoring component per result.
 
 ---
 
@@ -142,12 +201,19 @@ Options: `--top-k N` (results count), `--threshold F` (min score), `--path <dir>
 
 Beacon runs on **open-source models by default** — no API keys, no cloud costs, fully local via [Ollama](https://ollama.com).
 
-| Model | Dims | Context | Speed | Best for |
-|-------|------|---------|-------|----------|
-| **nomic-embed-text** (default) | 768 | 8192 | Fast | General-purpose, great code search |
-| **mxbai-embed-large** | 1024 | 512 | Fast | Higher accuracy, larger vectors |
-| **snowflake-arctic-embed:l** | 1024 | 512 | Medium | Strong retrieval benchmarks |
-| **all-minilm** | 384 | 512 | Very fast | Lightweight, low resource usage |
+| Model | Dims | Speed (M2, measured) | Best for |
+|-------|------|----------------------|----------|
+| **qwen3-embedding:0.6b** (default) | 1024 | 24 chunks/s | Strong code retrieval, instruction-aware queries |
+| **nomic-embed-text** | 768 | 43 chunks/s | Fastest indexing; set `dimensions: 768` |
+| **qwen3-embedding:4b** | 1024 | 4 chunks/s | Highest quality, ~10x slower to index |
+| **all-minilm** | 384 | very fast | Lightweight, low resource usage |
+
+Throughput measured warm on an M2/16GB — a cold model load makes the first run
+look far slower than steady state.
+
+**Changing model or dimensions invalidates the index.** Beacon detects the
+mismatch, refuses to search rather than returning nonsense, and tells you to run
+`/reindex`.
 
 To switch models, pull with Ollama and update your config:
 
@@ -284,7 +350,7 @@ Beacon also provides a **code-explorer** agent and a **semantic-search** skill t
 - **Stays in sync automatically** — hooks handle full index, incremental re-embedding on edits, and garbage collection
 - **Resilient** — retries with backoff on transient failures, auto-recovers from DB corruption, debounces GC
 - **Works with any embedding provider** — Ollama (local/free), OpenAI, Voyage AI, LiteLLM, or any OpenAI-compatible API
-- **Gives Claude better context** — slash commands, a code-explorer agent, and a grep-nudge hook for smarter search
+- **Gives Claude better context** — MCP tools it selects itself, slash commands, a code-explorer agent, and a search-redirect hook
 
 </details>
 
@@ -299,7 +365,7 @@ Beacon uses Claude Code [hooks](https://docs.anthropic.com/en/docs/claude-code/h
 | **PostToolUse** | `Write`, `Edit`, `MultiEdit` | Re-embeds the changed file |
 | **PostToolUse** | `Bash` | Garbage collects embeddings for deleted files |
 | **PreCompact** | Before context compaction | Injects index status so search capability survives compaction |
-| **PreToolUse** | `Grep` | Intercepts grep and redirects to Beacon for semantic-style queries |
+| **PreToolUse** | `Grep`, `Bash` | Redirects a codebase search to the matching Beacon tool. Covers shell `grep`/`rg` too, since that is what agents actually run. Skips regex, literals, and anything outside the index. |
 
 </details>
 
@@ -312,11 +378,12 @@ Default configuration (`config/beacon.default.json`):
 {
   "embedding": {
     "api_base": "http://localhost:11434/v1",
-    "model": "nomic-embed-text",
+    "model": "qwen3-embedding:0.6b",
     "api_key_env": "",
-    "dimensions": 768,
+    "dimensions": 1024,
     "batch_size": 10,
-    "query_prefix": "search_query: "
+    "query_prefix": "Instruct: Given a code search query, retrieve the code that answers it\nQuery: ",
+    "document_prefix": ""
   },
   "chunking": {
     "strategy": "hybrid",
@@ -353,9 +420,10 @@ Default configuration (`config/beacon.default.json`):
 | Option | Default | Description |
 |--------|---------|-------------|
 | `embedding.api_base` | `http://localhost:11434/v1` | Embedding API endpoint |
-| `embedding.model` | `nomic-embed-text` | Embedding model name |
-| `embedding.dimensions` | `768` | Vector dimensions (must match model) |
-| `embedding.query_prefix` | `search_query: ` | Prefix prepended to search queries |
+| `embedding.model` | `qwen3-embedding:0.6b` | Embedding model name |
+| `embedding.dimensions` | `1024` | Vector dimensions (must match model) |
+| `embedding.query_prefix` | qwen3 instruct prefix | Prepended to queries only |
+| `embedding.document_prefix` | `""` | Prepended to indexed documents only |
 | `indexing.include` | Common code patterns | Glob patterns for files to index |
 | `indexing.exclude` | `node_modules`, `dist`, etc. | Glob patterns to skip |
 | `indexing.max_file_size_kb` | `500` | Skip files larger than this |
@@ -364,6 +432,8 @@ Default configuration (`config/beacon.default.json`):
 | `search.top_k` | `10` | Max results per query |
 | `search.similarity_threshold` | `0.35` | Minimum similarity score |
 | `search.hybrid.enabled` | `true` | Enable hybrid search (set `false` for pure vector) |
+| `search.hybrid.weight_graph` | `1.0` | Symbol-graph boost. `0` disables the graph signal |
+| `intercept.mode` | `redirect` | `redirect` blocks a search and names the right tool, `advise` only suggests, `off` disables |
 
 #### Per-repo overrides
 
