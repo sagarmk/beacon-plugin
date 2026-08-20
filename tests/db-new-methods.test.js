@@ -153,3 +153,35 @@ describe('BeaconDatabase new methods', () => {
     });
   });
 });
+
+describe('needsNativeRebuild', () => {
+  it('catches an ABI mismatch', async () => {
+    const { needsNativeRebuild } = await import('../scripts/lib/open-db.js');
+    expect(needsNativeRebuild(new Error(
+      'The module was compiled against a different Node.js version using NODE_MODULE_VERSION 115.'
+    ))).toBe(true);
+  });
+
+  it('catches a binding that was never built', async () => {
+    // `npm install --production` can leave the package directory in place with
+    // no compiled binary. This message is what that looks like, and matching
+    // only NODE_MODULE_VERSION missed it entirely.
+    const { needsNativeRebuild } = await import('../scripts/lib/open-db.js');
+    expect(needsNativeRebuild(new Error(
+      'Could not locate the bindings file. Tried:\n → .../better_sqlite3.node'
+    ))).toBe(true);
+  });
+
+  it('catches a binary built for the wrong architecture', async () => {
+    const { needsNativeRebuild } = await import('../scripts/lib/open-db.js');
+    expect(needsNativeRebuild(new Error('mach-o, but wrong architecture'))).toBe(true);
+    expect(needsNativeRebuild(new Error('invalid ELF header'))).toBe(true);
+  });
+
+  it('does not rebuild for unrelated failures', async () => {
+    const { needsNativeRebuild } = await import('../scripts/lib/open-db.js');
+    expect(needsNativeRebuild(new Error('database disk image is malformed'))).toBe(false);
+    expect(needsNativeRebuild(new Error('SQLITE_BUSY: database is locked'))).toBe(false);
+    expect(needsNativeRebuild(new Error('no such table: chunks'))).toBe(false);
+  });
+});
