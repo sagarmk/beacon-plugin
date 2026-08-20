@@ -436,7 +436,7 @@ export class BeaconDatabase {
     // away. Seeding PageRank on the top hits walks that edge.
     const wGraph = hybrid.weight_graph ?? 0;
     if (wGraph > 0 && scored.length > 0) {
-      const ppr = this._graphRanks(scored, hybrid.graph_seeds ?? 5, hybrid.graph_damping);
+      const ppr = this._graphRanks(scored, hybrid.graph_seeds ?? 5, hybrid.graph_damping, hybrid.graph_max_definers);
       if (ppr.size > 0) {
         for (const s of scored) {
           const p = ppr.get(s.filePath);
@@ -629,13 +629,13 @@ export class BeaconDatabase {
 
   // Built once per connection: a query-time rebuild would re-read every symbol
   // and reference row on each search.
-  _fileGraph(damping) {
-    const key = damping || 'sqrt';
+  _fileGraph(damping, maxDefiners) {
+    const key = `${damping || 'raw'}:${maxDefiners || 0}`;
     if (this._graphCacheKey === key && this._graphCache !== undefined) return this._graphCache;
     if (!this.hasSymbolGraph()) { this._graphCacheKey = key; this._graphCache = null; return null; }
     const { refsByFile, definitionsByName } = this.getGraphData();
     this._graphCacheKey = key;
-    this._graphCache = buildFileGraph(refsByFile, definitionsByName, key);
+    this._graphCache = buildFileGraph(refsByFile, definitionsByName, damping || 'raw', maxDefiners || 0);
     return this._graphCache;
   }
 
@@ -643,8 +643,8 @@ export class BeaconDatabase {
    * Personalized PageRank seeded on the strongest current matches, weighted by
    * their score so a marginal hit does not pull the walk as hard as a good one.
    */
-  _graphRanks(scored, seedCount, damping) {
-    const edges = this._fileGraph(damping);
+  _graphRanks(scored, seedCount, damping, maxDefiners) {
+    const edges = this._fileGraph(damping, maxDefiners);
     if (!edges || edges.size === 0) return new Map();
 
     const best = new Map();

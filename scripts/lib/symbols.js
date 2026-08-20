@@ -22,6 +22,12 @@ const DEFINITIONS = {
     [/^\s*(?:export\s+)?interface\s+([A-Za-z_$][\w$]*)/, 'interface'],
     [/^\s*(?:export\s+)?type\s+([A-Za-z_$][\w$]*)\s*=/, 'type'],
     [/^\s*(?:export\s+)?enum\s+([A-Za-z_$][\w$]*)/, 'enum'],
+    // A top-level const bound to anything else — an object, an array, or the
+    // result of a call. Requiring an arrow or `function` on the right missed a
+    // whole category: config objects, lookup tables, and every component
+    // written as `const Card = React.forwardRef(...)`. Anchored at column 0 so
+    // ordinary locals inside a function body stay out of the graph.
+    [/^(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=/, 'const'],
     // class method shorthand: two-space indent, name(args) {  — excluding keywords
     [/^\s{2,}(?:static\s+)?(?:async\s+)?(?:get\s+|set\s+)?([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{/, 'method'],
   ],
@@ -66,6 +72,10 @@ const DEFINITIONS = {
   ],
   sql: [
     [/^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|VIEW|FUNCTION|PROCEDURE|INDEX|TRIGGER)\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"\[]?([A-Za-z_][\w]*)/i, 'table'],
+    // Migrations rarely CREATE anything — they ALTER an existing table, and the
+    // table they touch is the one thing worth knowing about the file. Half of
+    // all .sql files yielded nothing at all without this.
+    [/^\s*ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?[`"\[]?([A-Za-z_][\w]*)/i, 'table'],
   ],
 };
 

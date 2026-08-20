@@ -55,7 +55,8 @@
       "graph_seeds": 5,
       "graph_damping": "raw",
       "graph_expand": 3,
-      "graph_expand_min": 0.05
+      "graph_expand_min": 0.05,
+      "graph_max_definers": 0
     }
   },
   "storage": {

@@ -90,12 +90,17 @@ export function personalizedPageRank(edges, seeds, opts = {}) {
  * file graph. A file that references a name gets an edge to every file defining
  * it, split evenly — an ambiguous name is weaker evidence than a unique one.
  */
-export function buildFileGraph(refsByFile, definitionsByName, damping = 'raw') {
+export function buildFileGraph(refsByFile, definitionsByName, damping = 'raw', maxDefiners = 0) {
   const edges = new Map();
   for (const [file, names] of refsByFile) {
     for (const name of names) {
       const targets = definitionsByName.get(name);
       if (!targets || targets.length === 0) continue;
+      // A name defined in many files carries almost no information — `config`,
+      // `router`, `handler`. Splitting weight 1/n does not go far enough: the
+      // edges still exist, and every file referencing any of them drags rank
+      // toward an arbitrary definer. Same intuition as an IDF cutoff.
+      if (maxDefiners > 0 && targets.length > maxDefiners) continue;
       const weight = 1 / targets.length;
       for (const target of targets) {
         if (target === file) continue; // self-references carry no information
