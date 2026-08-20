@@ -1,13 +1,26 @@
 {
   "ollama": {
-    "description": "Ollama (local)",
+    "description": "Ollama (local) \u2014 Qwen3 embedding, code-capable",
+    "embedding": {
+      "api_base": "http://localhost:11434/v1",
+      "model": "qwen3-embedding:0.6b",
+      "api_key_env": "",
+      "dimensions": 1024,
+      "batch_size": 10,
+      "query_prefix": "Instruct: Given a code search query, retrieve the code that answers it\nQuery: ",
+      "document_prefix": ""
+    }
+  },
+  "ollama-nomic": {
+    "description": "Ollama (local) \u2014 nomic-embed-text, general English text",
     "embedding": {
       "api_base": "http://localhost:11434/v1",
       "model": "nomic-embed-text",
       "api_key_env": "",
       "dimensions": 768,
       "batch_size": 10,
-      "query_prefix": "search_query: "
+      "query_prefix": "search_query: ",
+      "document_prefix": "search_document: "
     }
   },
   "openai": {
@@ -18,7 +31,8 @@
       "api_key_env": "OPENAI_API_KEY",
       "dimensions": 1536,
       "batch_size": 100,
-      "query_prefix": ""
+      "query_prefix": "",
+      "document_prefix": ""
     }
   },
   "voyage": {
@@ -29,7 +43,8 @@
       "api_key_env": "VOYAGE_API_KEY",
       "dimensions": 1024,
       "batch_size": 50,
-      "query_prefix": ""
+      "query_prefix": "",
+      "document_prefix": ""
     }
   },
   "litellm": {
@@ -40,7 +55,8 @@
       "api_key_env": "LITELLM_API_KEY",
       "dimensions": 1024,
       "batch_size": 50,
-      "query_prefix": ""
+      "query_prefix": "",
+      "document_prefix": ""
     }
   }
 }

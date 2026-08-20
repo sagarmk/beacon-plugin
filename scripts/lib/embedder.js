@@ -17,10 +17,17 @@ export class Embedder {
     }
     this.dimensions = config.embedding.dimensions;
     this.batchSize = config.embedding.batch_size;
+    // Asymmetric models embed a question and a passage differently and need to
+    // be told which is which. nomic-embed-text wants "search_query: " on one
+    // side and "search_document: " on the other; Qwen3 puts an instruction on
+    // the query only. Getting this wrong lands queries and documents in
+    // mismatched subspaces and quietly costs recall on every search.
     this.queryPrefix = config.embedding.query_prefix || '';
+    this.documentPrefix = config.embedding.document_prefix || '';
   }
 
-  async embedDocuments(texts) {
+  // Raw — no prefix. Used internally and for health checks.
+  async _embed(texts) {
     const batches = batchArray(texts, this.batchSize);
     const embeddings = [];
 
@@ -30,6 +37,16 @@ export class Embedder {
     }
 
     return embeddings;
+  }
+
+  // Indexed side.
+  async embedDocuments(texts) {
+    return this._embed(this.documentPrefix ? texts.map(t => this.documentPrefix + t) : texts);
+  }
+
+  // Search side.
+  async embedQueries(queries) {
+    return this._embed(this.queryPrefix ? queries.map(q => this.queryPrefix + q) : queries);
   }
 
   async _fetchWithRetry(batch, retries = 2, backoffMs = 1000) {
@@ -68,14 +85,13 @@ export class Embedder {
   }
 
   async embedQuery(query) {
-    const prefixed = this.queryPrefix + query;
-    const [embedding] = await this.embedDocuments([prefixed]);
+    const [embedding] = await this.embedQueries([query]);
     return embedding;
   }
 
   async ping() {
     try {
-      await this.embedDocuments(['test']);
+      await this._embed(['test']);
       return { ok: true };
     } catch (err) {
       return { ok: false, error: err.message };

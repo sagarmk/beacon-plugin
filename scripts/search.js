@@ -62,13 +62,18 @@ function mergeAdjacentChunks(matches) {
     const next = sorted[i];
     // Merge if same file and adjacent/overlapping (within 5 lines gap)
     if (next.file === current.file && next._start <= current._end + 5) {
+      // Sorting is by start line, so `current` is merely the EARLIER chunk, not
+      // the better one — keeping its preview showed the wrong snippet whenever
+      // the later chunk was the actual match. Pick by score.
+      const better = parseFloat(next.score ?? next.similarity) > parseFloat(current.score ?? current.similarity) ? next : current;
       current = {
         ...current,
         _end: Math.max(current._end, next._end),
         lines: `${current._start}-${Math.max(current._end, next._end)}`,
         score: current.score !== undefined ? String(Math.max(parseFloat(current.score), parseFloat(next.score)).toFixed(3)) : current.score,
         similarity: String(Math.max(parseFloat(current.similarity), parseFloat(next.similarity)).toFixed(3)),
-        preview: current.preview, // keep the higher-scored chunk's preview
+        preview: better.preview,
+        ...(better._debug ? { _debug: better._debug } : {}),
       };
     } else {
       const { _start, _end, ...clean } = current;
@@ -114,8 +119,7 @@ try {
   let embeddings;
   let ftsOnly = false;
   try {
-    const prefixed = queries.map(q => (config.embedding.query_prefix || '') + q);
-    embeddings = await embedder.embedDocuments(prefixed);
+    embeddings = await embedder.embedQueries(queries);
   } catch (err) {
     console.error(`Beacon: embedding server unavailable (${err.message}), falling back to FTS-only search.`);
     ftsOnly = true;
@@ -149,7 +153,10 @@ try {
         lines: `${r.startLine}-${r.endLine}`,
         similarity: r.similarity.toFixed(3),
         ...(r.score !== undefined ? { score: r.score.toFixed(3) } : {}),
-        preview: r.chunkText.slice(0, 300)
+        preview: r.chunkText.slice(0, 300),
+        // hybrid.debug scoring breakdown was computed and then silently dropped
+        // here, so the debug flag produced nothing through the CLI
+        ...(r._debug ? { _debug: r._debug } : {}),
       })))
     }));
 

@@ -42,9 +42,11 @@ export function shouldIndex(filePath, config) {
     return false;
   }
 
-  // 4. Check file size
+  // 4. Check file size — filePath is repo-relative, so resolve it against the
+  // repo root rather than the CWD, or every file silently fails this check
+  // whenever the session starts in a subdirectory.
   try {
-    const stats = statSync(filePath);
+    const stats = statSync(path.resolve(getRepoRoot(), filePath));
     if (stats.size > config.indexing.max_file_size_kb * 1024) return false;
   } catch {
     return false; // file doesn't exist or inaccessible
