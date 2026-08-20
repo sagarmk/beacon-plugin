@@ -1,0 +1,60 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22 is what the plugin is developed against; 20 is the oldest release
+        # still in support that satisfies the engines field.
+        node: ['20', '22']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # `npm ci` respects the lockfile and builds better-sqlite3's native addon.
+      # A failure here is itself worth catching: an install that leaves the
+      # addon unbuilt is the exact bug that shipped to users.
+      - run: npm ci
+
+      - name: Verify the native module actually loads
+        run: node -e "new (require('better-sqlite3'))(':memory:').close(); console.log('better-sqlite3 OK')"
+
+      - name: Every script parses
+        run: |
+          for f in $(git ls-files '*.js'); do node --check "$f" || exit 1; done
+          echo "all scripts parse"
+
+      - name: Manifests are valid JSON and their paths resolve
+        run: |
+          node -e "
+            const fs=require('fs');
+            for (const f of ['package.json','.claude-plugin/plugin.json','.claude-plugin/marketplace.json','config/beacon.default.json','config/providers.json','hooks/hooks.json'])
+              JSON.parse(fs.readFileSync(f,'utf8'));
+            const p=JSON.parse(fs.readFileSync('.claude-plugin/plugin.json','utf8'));
+            const missing=[];
+            for (const k of ['skills','commands','agents'])
+              for (const rel of p[k]||[]) if (!fs.existsSync(rel.replace(/^\.\//,''))) missing.push(rel);
+            for (const s of Object.values(p.mcpServers||{}))
+              for (const a of s.args||[]) {
+                const rp=a.replace('\${CLAUDE_PLUGIN_ROOT}/','');
+                if (rp.endsWith('.js') && !fs.existsSync(rp)) missing.push(a);
+              }
+            if (missing.length) { console.error('unresolved manifest paths:', missing); process.exit(1); }
+            console.log('manifests OK');
+          "
+
+      # The suite must not need an embedding server: the integration tests drive
+      # sync/gc/embed-file against a stub embedder started in-process.
+      - run: npx vitest run
