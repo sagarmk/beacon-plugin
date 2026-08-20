@@ -5,7 +5,22 @@
 import { openDatabase } from './lib/open-db.js';
 import { loadConfig } from './lib/config.js';
 import { existsSync, readFileSync, unlinkSync } from 'fs';
+import { spawnSync } from 'child_process';
 import path from 'path';
+
+// A PID file only survives an unclean exit, and by then the OS may have handed
+// that number to something else. Signalling it blind would kill an unrelated
+// process, so confirm the PID is actually a Beacon sync before touching it.
+function isBeaconSync(pid) {
+  try {
+    const out = spawnSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf-8' });
+    if (out.status !== 0) return false;
+    const cmd = (out.stdout || '').trim();
+    return cmd.includes('sync.js') && cmd.includes('node');
+  } catch {
+    return false;   // cannot verify -> do not kill
+  }
+}
 
 const config = loadConfig();
 const dbDir = path.resolve(config.storage.path);
@@ -27,6 +42,14 @@ if (isNaN(pid)) {
 
 // Try to kill the process
 let killed = false;
+if (!isBeaconSync(pid)) {
+  try { unlinkSync(pidFile); } catch { /* ignore */ }
+  console.log(JSON.stringify({
+    status: 'cleaned', pid,
+    message: `PID ${pid} is not a Beacon sync process (stale PID file). Removed the file without signalling it.`,
+  }, null, 2));
+  process.exit(0);
+}
 try {
   process.kill(pid, 'SIGTERM');
   killed = true;

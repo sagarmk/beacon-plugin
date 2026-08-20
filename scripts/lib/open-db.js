@@ -30,7 +30,10 @@ export function openDatabase(dbPath, dimensions) {
       throw new Error(`Native module still incompatible after rebuild: ${err.message}`);
     }
 
-    console.log('Beacon: Node.js version changed — rebuilding native modules...');
+    // stderr, not stdout: callers of this function emit JSON on stdout, and the
+    // MCP server writes JSON-RPC frames there. A progress line printed to stdout
+    // lands mid-payload and corrupts whatever the caller was producing.
+    console.error('Beacon: Node.js version changed — rebuilding native modules...');
     const rebuild = spawnSync('npm', ['rebuild'], {
       cwd: PLUGIN_ROOT,
       stdio: 'pipe',
@@ -42,7 +45,7 @@ export function openDatabase(dbPath, dimensions) {
       throw new Error(`npm rebuild failed (exit ${rebuild.status}): ${stderr}`);
     }
 
-    console.log('Beacon: rebuild successful, re-executing...');
+    console.error('Beacon: rebuild successful, re-executing...');
     const child = spawnSync(process.execPath, process.argv.slice(1), {
       cwd: process.cwd(),
       stdio: 'inherit',
