@@ -37,9 +37,31 @@ try {
     db.close();
   } catch { /* fall back to search-only guidance */ }
 
-  const lines = [
+  // Coverage catches a half-built index, which is the failure that hides best:
+  // a partial index answers confidently from the fraction it has, and nothing
+  // in a normal session ever says otherwise. /index has reported this all along
+  // but only when a human ran it. ~70ms per 1000 files, well inside the budget.
+  let coverageWarning = null;
+  try {
+    const { getRepoFiles } = await import('./lib/git.js');
+    const { shouldIndex } = await import('./lib/ignore.js');
+    const eligible = getRepoFiles(config.indexing?.max_files || 10000)
+      .filter(f => shouldIndex(f, config)).length;
+    if (eligible > 0) {
+      const pct = Math.round((health.fileCount / eligible) * 100);
+      // Some shortfall is normal — empty files produce no chunks — so only flag
+      // a gap too large to explain that way.
+      if (pct < 75) {
+        coverageWarning = `WARNING: only ${health.fileCount} of ${eligible} eligible files are indexed (${pct}%). Search results are incomplete and will silently omit code. Run /reindex.`;
+      }
+    }
+  } catch { /* not a git repo, or git unavailable — skip the check */ }
+
+  const lines = [];
+  if (coverageWarning) lines.push(coverageWarning);
+  lines.push(
     `This repo has a Beacon code index (${health.fileCount} files, ${health.chunkCount} chunks). Prefer its MCP tools over grep/cat for code search:`,
-  ];
+  );
   if (hasGraph) {
     lines.push(
       `- find_symbol(name) — where a symbol is defined. Exact and instant; use it instead of grepping for a definition.`,

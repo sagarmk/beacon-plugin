@@ -3,7 +3,7 @@
 // Subcommands: show | set <key> <value> | provider <name> | reset [section]
 // Output: JSON to stdout for Claude to format
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getRepoRoot } from './lib/repo-root.js';
@@ -20,11 +20,35 @@ const userConfigPath = path.join(getRepoRoot(), '.claude', 'beacon.json');
 const defaults = JSON.parse(readFileSync(defaultsPath, 'utf-8'));
 const providers = JSON.parse(readFileSync(providersPath, 'utf-8'));
 
-function loadUserConfig() {
-  if (existsSync(userConfigPath)) {
-    return JSON.parse(readFileSync(userConfigPath, 'utf-8'));
+// `allowCorrupt` exists for reset, whose entire job is to recover from a file
+// nothing else can read. Every other caller should fail loudly with a way out —
+// an unhandled JSON.parse here printed a raw stack trace from the one tool a
+// user would reach for to repair their config.
+function loadUserConfig({ allowCorrupt = false } = {}) {
+  if (!existsSync(userConfigPath)) return {};
+  let raw;
+  try {
+    raw = readFileSync(userConfigPath, 'utf-8');
+  } catch (err) {
+    if (allowCorrupt) return null;
+    console.error(JSON.stringify({ error: `Cannot read ${userConfigPath}: ${err.message}` }, null, 2));
+    process.exit(1);
   }
-  return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('top level must be a JSON object');
+    }
+    return parsed;
+  } catch (err) {
+    if (allowCorrupt) return null;
+    console.error(JSON.stringify({
+      error: `.claude/beacon.json is not valid JSON: ${err.message}`,
+      file: userConfigPath,
+      recover: 'Run `/config reset` — it rewrites the file with defaults and works even when the current one cannot be parsed.',
+    }, null, 2));
+    process.exit(1);
+  }
 }
 
 function saveUserConfig(config) {
@@ -32,7 +56,18 @@ function saveUserConfig(config) {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
-  writeFileSync(userConfigPath, JSON.stringify(config, null, 2) + '\n');
+  // Write to a temp file and rename, which is atomic on POSIX. A truncated
+  // write leaves JSON that nothing can parse, and every Beacon command exits
+  // on an unparseable config — so a half-finished write here takes out the
+  // whole plugin until someone deletes the file by hand.
+  const tmp = `${userConfigPath}.tmp-${process.pid}`;
+  try {
+    writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n');
+    renameSync(tmp, userConfigPath);
+  } catch (err) {
+    try { unlinkSync(tmp); } catch { /* nothing to clean up */ }
+    throw err;
+  }
 }
 
 // --- Helpers ---
@@ -288,7 +323,21 @@ function cmdProvider(name) {
 }
 
 function cmdReset(section) {
-  const userConfig = loadUserConfig();
+  const loaded = loadUserConfig({ allowCorrupt: true });
+
+  // Reset is the escape hatch, so it has to work on a file no other command can
+  // read. A corrupt config cannot be partially reset — replace it wholesale.
+  if (loaded === null) {
+    saveUserConfig({});
+    console.log(JSON.stringify({
+      action: 'reset',
+      section: 'all',
+      message: 'The existing .claude/beacon.json could not be parsed and was replaced with defaults.',
+      was_corrupt: true,
+    }, null, 2));
+    return;
+  }
+  const userConfig = loaded;
 
   if (Object.keys(userConfig).length === 0 && !existsSync(userConfigPath)) {
     console.log(JSON.stringify({
