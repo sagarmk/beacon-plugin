@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, realpathSync } from 'fs';
 import path from 'path';
 import os from 'os';
 
@@ -47,35 +47,47 @@ export function getEffectiveBlacklist() {
   return [...new Set([...defaults, ...userEntries])];
 }
 
+// process.cwd() always reports the resolved path, while a configured entry is
+// whatever the user typed. On macOS /tmp and /var/folders are symlinks, and
+// symlinked project directories are common — so comparing the two forms
+// silently never matched, and the blacklist did nothing at all in those trees.
+const realPath = (p) => { try { return realpathSync(p); } catch { return path.resolve(p); } };
+
 export function isCwdBlacklisted() {
-  const cwd = process.cwd();
+  const cwd = realPath(process.cwd());
   const config = loadGlobalConfig();
   const whitelist = config.whitelist || [];
 
   // Whitelist takes precedence — exact match or cwd is under a whitelisted path
   for (const w of whitelist) {
-    const resolved = path.resolve(w);
+    const resolved = realPath(w);
     if (cwd === resolved || cwd.startsWith(resolved + path.sep)) {
       return false;
     }
   }
 
-  const blacklist = getEffectiveBlacklist();
-  for (const b of blacklist) {
-    const resolved = path.resolve(b);
-    if (cwd === resolved) {
-      return true;
-    }
+  // The computed ancestor defaults must stay exact-match. They are every
+  // directory from / up to the home directory, so making them inherit would
+  // blacklist the entire filesystem and nothing would ever index.
+  const defaults = new Set(getDefaultBlacklist().map((d) => realPath(d)));
+  for (const b of getEffectiveBlacklist()) {
+    const resolved = realPath(b);
+    if (cwd === resolved) return true;
+    // A user-added entry inherits, matching how the whitelist already behaves.
+    // Exact-only matching meant blacklisting a directory did nothing for
+    // anything beneath it — which is how a home Documents folder ended up fully
+    // indexed despite /Users/<name> being on the list.
+    if (!defaults.has(resolved) && cwd.startsWith(resolved + path.sep)) return true;
   }
   return false;
 }
 
 export function isCwdWhitelisted() {
-  const cwd = process.cwd();
+  const cwd = realPath(process.cwd());
   const config = loadGlobalConfig();
   const whitelist = config.whitelist || [];
   for (const w of whitelist) {
-    const resolved = path.resolve(w);
+    const resolved = realPath(w);
     if (cwd === resolved || cwd.startsWith(resolved + path.sep)) {
       return true;
     }

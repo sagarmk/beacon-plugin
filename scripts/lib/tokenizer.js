@@ -154,6 +154,14 @@ export function prepareFTSQuery(query) {
  */
 export function normalizeBM25(scores) {
   if (scores.length === 0) return [];
+  // A lone candidate receives the full BM25 weight regardless of how weak its
+  // raw score is. That looks wrong, and an absolute scale — 1 - e^(rank/k),
+  // scoring each candidate on its own merit — is the obvious correction.
+  // Measured, it is worse: 0.667 to 0.736 MRR against 0.792 for min-max across
+  // k = 2..20 on a 12-query benchmark, only matching min-max at k = 20 where
+  // the curve is flat enough to barely contribute. The positional stretch is
+  // apparently doing useful work, so this stays as it is. Do not "fix" it
+  // without re-running that sweep.
   if (scores.length === 1) return [1.0];
 
   const min = Math.min(...scores);
@@ -164,6 +172,7 @@ export function normalizeBM25(scores) {
   // min (most negative) = best match → 1.0, max (least negative) = worst → 0.0
   return scores.map(s => (max - s) / (max - min));
 }
+
 
 /**
  * Reciprocal Rank Fusion scoring.

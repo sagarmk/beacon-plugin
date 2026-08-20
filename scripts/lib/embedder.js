@@ -68,11 +68,20 @@ export class Embedder {
 
         if (!response.ok) {
           const text = await response.text();
-          throw new Error(`Embedding API error ${response.status}: ${text}`);
+          const err = new Error(`Embedding API error ${response.status}: ${text}`);
+          err.status = response.status;
+          throw err;
         }
 
         return await response.json();
       } catch (err) {
+        // A rejected key or an unknown model name will be rejected identically
+        // every time — retrying burns three attempts and five seconds of
+        // backoff before surfacing the message that was already correct. A
+        // wrong model name is the likeliest failure with the local default.
+        // 408 and 429 stay retryable: those do clear on their own.
+        const fatal = err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429;
+        if (fatal) throw err;
         if (attempt < retries) {
           const delay = backoffMs * Math.pow(4, attempt); // 1s, 4s
           console.warn(`Beacon: embedding request failed (attempt ${attempt + 1}/${retries + 1}), retrying in ${delay}ms: ${err.message}`);
