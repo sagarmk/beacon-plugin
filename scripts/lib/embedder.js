@@ -17,10 +17,17 @@ export class Embedder {
     }
     this.dimensions = config.embedding.dimensions;
     this.batchSize = config.embedding.batch_size;
+    // Asymmetric models embed a question and a passage differently and need to
+    // be told which is which. nomic-embed-text wants "search_query: " on one
+    // side and "search_document: " on the other; Qwen3 puts an instruction on
+    // the query only. Getting this wrong lands queries and documents in
+    // mismatched subspaces and quietly costs recall on every search.
     this.queryPrefix = config.embedding.query_prefix || '';
+    this.documentPrefix = config.embedding.document_prefix || '';
   }
 
-  async embedDocuments(texts) {
+  // Raw — no prefix. Used internally and for health checks.
+  async _embed(texts) {
     const batches = batchArray(texts, this.batchSize);
     const embeddings = [];
 
@@ -30,6 +37,16 @@ export class Embedder {
     }
 
     return embeddings;
+  }
+
+  // Indexed side.
+  async embedDocuments(texts) {
+    return this._embed(this.documentPrefix ? texts.map(t => this.documentPrefix + t) : texts);
+  }
+
+  // Search side.
+  async embedQueries(queries) {
+    return this._embed(this.queryPrefix ? queries.map(q => this.queryPrefix + q) : queries);
   }
 
   async _fetchWithRetry(batch, retries = 2, backoffMs = 1000) {
@@ -51,11 +68,20 @@ export class Embedder {
 
         if (!response.ok) {
           const text = await response.text();
-          throw new Error(`Embedding API error ${response.status}: ${text}`);
+          const err = new Error(`Embedding API error ${response.status}: ${text}`);
+          err.status = response.status;
+          throw err;
         }
 
         return await response.json();
       } catch (err) {
+        // A rejected key or an unknown model name will be rejected identically
+        // every time — retrying burns three attempts and five seconds of
+        // backoff before surfacing the message that was already correct. A
+        // wrong model name is the likeliest failure with the local default.
+        // 408 and 429 stay retryable: those do clear on their own.
+        const fatal = err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429;
+        if (fatal) throw err;
         if (attempt < retries) {
           const delay = backoffMs * Math.pow(4, attempt); // 1s, 4s
           console.warn(`Beacon: embedding request failed (attempt ${attempt + 1}/${retries + 1}), retrying in ${delay}ms: ${err.message}`);
@@ -68,14 +94,13 @@ export class Embedder {
   }
 
   async embedQuery(query) {
-    const prefixed = this.queryPrefix + query;
-    const [embedding] = await this.embedDocuments([prefixed]);
+    const [embedding] = await this.embedQueries([query]);
     return embedding;
   }
 
   async ping() {
     try {
-      await this.embedDocuments(['test']);
+      await this._embed(['test']);
       return { ok: true };
     } catch (err) {
       return { ok: false, error: err.message };

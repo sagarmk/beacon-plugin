@@ -11,6 +11,16 @@ node_modules/
 # User-specific Claude settings
 .claude/settings.local.json
 
+# Per-repo Beacon config. Keys are meant to come from the environment via
+# `api_key_env`, never inlined here — but this file is the one place a
+# credential could plausibly be typed by hand, so keep it out of git.
+.claude/beacon.json
+
+# Never commit environment files; .env.example stays allowed
+.env
+.env.*
+!.env.example
+
 # Internal dev artifacts
 reports/
 TODO.md

@@ -49,7 +49,9 @@ try {
     } else {
       // Healthy — remind Claude to prefer Beacon
       const pluginRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
-      console.log(`Beacon: hybrid code search active (${stats.fileCount} files, ${stats.chunkCount} chunks). PREFER search.js over grep for all code search — it's faster and more accurate. Command: node ${pluginRoot}/scripts/search.js "<query>". Only use grep for regex patterns, literal counting, or within-file searches.`);
+      // Injected after compaction, so it has to restate the tools rather than
+      // assume the earlier session context survived.
+      console.log(`Beacon: code index active (${stats.fileCount} files, ${stats.chunkCount} chunks). Prefer the Beacon MCP tools over grep/cat: find_symbol(name) for where a symbol is defined, find_references(name) for every call site (exhaustive), outline(file) for a file's symbols, search_code(query) to find code by description. Grep is still right for literal text, regex, and anything outside the index. CLI fallback: node ${pluginRoot}/scripts/search.js "<query>".`);
     }
   } else {
     // Full status for /index-status command

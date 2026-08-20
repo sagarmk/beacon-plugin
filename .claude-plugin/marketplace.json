@@ -12,10 +12,10 @@
       "version": "1.0.0",
       "source": "./",
       "category": "development",
-      "homepage": "https://github.com/sagarmk/Claude-Code-Beacon-Plugin",
+      "homepage": "https://github.com/sagarmk/beacon-plugin",
       "license": "MIT",
       "author": { "name": "Sagar MK" },
-      "repository": "https://github.com/sagarmk/Claude-Code-Beacon-Plugin",
+      "repository": "https://github.com/sagarmk/beacon-plugin",
       "keywords": ["claude-code", "semantic-search", "code-search", "embeddings"]
     }
   ]

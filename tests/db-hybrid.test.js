@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { BeaconDatabase } from '../scripts/lib/db.js';
+import { BeaconDatabase, SCHEMA_VERSION } from '../scripts/lib/db.js';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -42,15 +42,24 @@ describe('BeaconDatabase hybrid search', () => {
       expect(cols.some(c => c.name === 'identifiers')).toBe(true);
     });
 
-    it('sets schema_version to 2', () => {
-      expect(db.getSyncState('schema_version')).toBe('2');
+    it('stamps the current schema version', () => {
+      // Tracks the constant rather than a literal, so a version bump does not
+      // need this test edited to keep passing.
+      expect(db.getSyncState('schema_version')).toBe(String(SCHEMA_VERSION));
     });
 
     it('migration is idempotent', () => {
       // Opening a second connection should not fail
       const db2 = new BeaconDatabase(join(tmpDir, 'test.db'), DIMENSIONS);
-      expect(db2.getSyncState('schema_version')).toBe('2');
+      expect(db2.getSyncState('schema_version')).toBe(String(SCHEMA_VERSION));
       db2.close();
+    });
+
+    it('creates the symbol graph tables', () => {
+      const names = db.db.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('symbols','refs')"
+      ).all().map(r => r.name).sort();
+      expect(names).toEqual(['refs', 'symbols']);
     });
   });
 

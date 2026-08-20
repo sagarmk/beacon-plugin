@@ -8,16 +8,29 @@ import { Embedder } from './lib/embedder.js';
 import { chunkCode } from './lib/chunker.js';
 import { loadConfig } from './lib/config.js';
 import { shouldIndex } from './lib/ignore.js';
-import { getFileHash } from './lib/git.js';
+import { getFileHash, resolveRepoPath } from './lib/git.js';
+import { getRepoRoot } from './lib/repo-root.js';
 import { extractIdentifiers } from './lib/tokenizer.js';
-import { readFileSync, existsSync } from 'fs';
+import { extractDefinitions, extractReferences } from './lib/symbols.js';
+import { readFileSync, existsSync, realpathSync } from 'fs';
 import path from 'path';
 
 const rawPath = process.argv[2];
 if (!rawPath) process.exit(0);
 
-// Normalize path to relative (hooks may pass absolute paths, DB stores relative paths)
-const filePath = path.isAbsolute(rawPath) ? path.relative(process.cwd(), rawPath) : rawPath;
+// Normalise to a repo-relative path — that is the key the index uses. Making
+// it relative to the CWD instead produced a different key for the same file
+// whenever the session started in a subdirectory, so edits were written as
+// duplicate chunks and the unchanged-file hash check never matched.
+//
+// Both sides go through realpath first. `git rev-parse --show-toplevel` always
+// reports the resolved path, while the hook passes whatever path the editing
+// tool used — and on macOS /tmp and /var/folders are symlinks, as are plenty of
+// project directories. Mixing the two forms produced a relative path full of
+// `../..` that failed shouldIndex, so the script exited 0 having silently
+// re-indexed nothing on every edit.
+const real = (p) => { try { return realpathSync(p); } catch { return path.resolve(p); } };
+const filePath = path.relative(real(getRepoRoot()), real(path.resolve(rawPath)));
 
 const config = loadConfig();
 
@@ -42,7 +55,7 @@ const embedder = new Embedder(config);
 try {
   // Wrap in async IIFE to allow early returns (which properly trigger finally block)
   await (async () => {
-    const content = readFileSync(filePath, 'utf-8');
+    const content = readFileSync(resolveRepoPath(filePath), 'utf-8');
     const fileHash = getFileHash(filePath);
 
     // Skip if file hasn't actually changed
@@ -51,6 +64,9 @@ try {
 
     const chunks = chunkCode(content, filePath, config);
     if (chunks.length === 0) return; // early exit — no chunks
+
+    const definitions = extractDefinitions(content, filePath);
+    db.replaceFileSymbols(filePath, definitions, extractReferences(content, filePath, definitions.map(d => d.name)));
 
     const texts = chunks.map(c => c.text);
     const embeddings = await embedder.embedDocuments(texts);

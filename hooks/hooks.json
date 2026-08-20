@@ -2,13 +2,13 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Grep",
+        "matcher": "Grep|Bash",
         "hooks": [
           {
             "type": "command",
             "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/grep-intercept.js",
             "timeout": 5,
-            "description": "Beacon: intercept grep and redirect to hybrid search when Beacon handles the query better"
+            "description": "Beacon: suggest the matching Beacon MCP tool for Grep and for shell grep/rg invocations"
           }
         ]
       }
@@ -29,6 +29,12 @@
             "timeout": 300,
             "async": true,
             "description": "Beacon: sync code embeddings index (full index on first run, diff-based on subsequent)"
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/session-context.js",
+            "timeout": 10,
+            "description": "Beacon: announce the search tools so the model can choose them before searching"
           }
         ]
       }

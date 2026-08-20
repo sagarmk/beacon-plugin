@@ -4,6 +4,7 @@
 
 import { openDatabase } from './lib/open-db.js';
 import { loadConfig } from './lib/config.js';
+import { resolveRepoPath } from './lib/git.js';
 import { existsSync } from 'fs';
 import path from 'path';
 
@@ -31,7 +32,10 @@ try {
   let removed = 0;
 
   for (const filePath of indexedFiles) {
-    if (!existsSync(filePath)) {
+    // Paths in the index are repo-relative. Testing them against the CWD meant
+    // that running gc from any subdirectory found every file "missing" and
+    // deleted the entire index.
+    if (!existsSync(resolveRepoPath(filePath))) {
       db.deleteFileChunks(filePath);
       removed++;
     }

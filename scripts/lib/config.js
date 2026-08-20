@@ -25,6 +25,7 @@ export function loadConfig() {
       userConfig = JSON.parse(readFileSync(userConfigPath, 'utf-8'));
     } catch (err) {
       console.error(`Beacon: failed to parse .claude/beacon.json: ${err.message}`);
+      console.error('Beacon: run `/config reset` to rewrite it with defaults.');
       process.exit(1);
     }
   }

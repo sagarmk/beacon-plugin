@@ -1,14 +1,19 @@
 {
   "name": "beacon",
   "version": "1.0.0",
-  "description": "Beacon — semantic code search for Claude Code",
+  "description": "Beacon \u2014 semantic code search for Claude Code",
   "author": {
     "name": "Sagar MK"
   },
   "license": "MIT",
-  "repository": "https://github.com/sagarmk/Claude-Code-Beacon-Plugin",
-  "homepage": "https://github.com/sagarmk/Claude-Code-Beacon-Plugin",
-  "keywords": ["claude-code", "semantic-search", "code-search", "embeddings"],
+  "repository": "https://github.com/sagarmk/beacon-plugin",
+  "homepage": "https://github.com/sagarmk/beacon-plugin",
+  "keywords": [
+    "claude-code",
+    "semantic-search",
+    "code-search",
+    "embeddings"
+  ],
   "skills": [
     "./skills/semantic-search"
   ],
@@ -26,5 +31,13 @@
   "agents": [
     "./agents/code-explorer.md"
   ],
-  "hooks": "./hooks/hooks.json"
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": {
+    "beacon": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/scripts/mcp-server.js"
+      ]
+    }
+  }
 }

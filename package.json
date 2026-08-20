@@ -23,9 +23,9 @@
   "author": "Sagar MK",
   "repository": {
     "type": "git",
-    "url": "https://github.com/sagarmk/Claude-Code-Beacon-Plugin"
+    "url": "https://github.com/sagarmk/beacon-plugin"
   },
-  "homepage": "https://github.com/sagarmk/Claude-Code-Beacon-Plugin",
+  "homepage": "https://github.com/sagarmk/beacon-plugin",
   "keywords": ["claude-code", "claude-code-plugin", "semantic-search", "code-search", "embeddings"],
   "files": [
     "package.json",
