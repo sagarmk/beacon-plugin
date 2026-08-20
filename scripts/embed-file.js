@@ -12,7 +12,7 @@ import { getFileHash, resolveRepoPath } from './lib/git.js';
 import { getRepoRoot } from './lib/repo-root.js';
 import { extractIdentifiers } from './lib/tokenizer.js';
 import { extractDefinitions, extractReferences } from './lib/symbols.js';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, realpathSync } from 'fs';
 import path from 'path';
 
 const rawPath = process.argv[2];
@@ -22,7 +22,15 @@ if (!rawPath) process.exit(0);
 // it relative to the CWD instead produced a different key for the same file
 // whenever the session started in a subdirectory, so edits were written as
 // duplicate chunks and the unchanged-file hash check never matched.
-const filePath = path.relative(getRepoRoot(), path.resolve(rawPath));
+//
+// Both sides go through realpath first. `git rev-parse --show-toplevel` always
+// reports the resolved path, while the hook passes whatever path the editing
+// tool used — and on macOS /tmp and /var/folders are symlinks, as are plenty of
+// project directories. Mixing the two forms produced a relative path full of
+// `../..` that failed shouldIndex, so the script exited 0 having silently
+// re-indexed nothing on every edit.
+const real = (p) => { try { return realpathSync(p); } catch { return path.resolve(p); } };
+const filePath = path.relative(real(getRepoRoot()), real(path.resolve(rawPath)));
 
 const config = loadConfig();
 
