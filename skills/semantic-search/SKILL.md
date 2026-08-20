@@ -18,6 +18,7 @@ them over shelling out.
 | **Every call site** of a symbol | `find_references(name)` | ~0.01 ms, exhaustive |
 | A file's **structure** before reading it | `outline(file)` | ~0.01 ms |
 | Code matching a **concept** you can only describe | `search_code(query)` | ~200 ms, ranked |
+| A file's **symbols**, by name and line | `outline(file)` | ~0.01 ms |
 | **Literal text** — regex, punctuation, exact case | `Grep` | — |
 
 The first three are indexed SQL lookups. If you already know the name, do not

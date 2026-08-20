@@ -57,22 +57,25 @@ try {
     }
   } catch { /* not a git repo, or git unavailable — skip the check */ }
 
+  // Framed as cost, not preference. "Prefer these tools" competes with a strong
+  // prior to just read the files and loses; what these tools actually offer is
+  // one call instead of many, and that is the argument worth making.
   const lines = [];
   if (coverageWarning) lines.push(coverageWarning);
   lines.push(
-    `This repo has a Beacon code index (${health.fileCount} files, ${health.chunkCount} chunks). Prefer its MCP tools over grep/cat for code search:`,
+    `This repo is indexed by Beacon (${health.fileCount} files, ${health.chunkCount} chunks). Answering a question by reading files costs one tool call per file and grows with the repo; these answer the same question in one call over all ${health.fileCount}:`,
   );
   if (hasGraph) {
     lines.push(
-      `- find_symbol(name) — where a symbol is defined. Exact and instant; use it instead of grepping for a definition.`,
-      `- find_references(name) — every call site. Exhaustive, so it is the only correct tool for "what breaks if I change this".`,
-      `- outline(file) — a file's symbols with line numbers. Use before reading a file to find the part that matters.`,
+      `- find_symbol(name) — the definition site. One call; grep costs a search plus a read, and may miss it.`,
+      `- find_references(name) — every call site, exhaustive. Ranked search returns a sample and will miss some, so this is the only correct tool for "what breaks if I change this".`,
+      `- outline(file) — every symbol in a file with line numbers, in one call. Cheaper than grepping for declarations and cheaper than reading the file.`,
     );
   }
   lines.push(
-    `- search_code(query) — find code by description when you cannot name it. Use it instead of reading files one by one.`,
+    `- search_code(query) — describe the behaviour and get ranked file:line matches across the repo. This is the tool for "how does X work" and "where is Y handled". Reach for it before opening files: exploring with cat/grep to find the relevant file costs several calls to reach what this returns in one.`,
     `- index_status() — index health, when results look stale or empty.`,
-    `Grep still wins for literal text, regex, case-sensitive matches, and anything outside the index (node_modules, dist, lockfiles, .env).`,
+    `Grep is still correct for literal text, regex, case-sensitive matches, and anything outside the index (node_modules, dist, lockfiles, .env).`,
   );
 
   console.log(JSON.stringify({
