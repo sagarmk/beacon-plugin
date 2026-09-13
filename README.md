@@ -500,6 +500,55 @@ Run `/search-code` with a test query to confirm search is working. If results in
 
 </details>
 
+## Roadmap
+
+Known gaps, ordered by what they cost you rather than by how interesting they
+are to build. Nothing here is a promise of a date.
+
+### Correctness first
+
+These three are bugs wearing the clothes of features. They are the next thing
+to land.
+
+| Gap | What happens today | Fix |
+|---|---|---|
+| **Build breaks on newer Node** | `better-sqlite3` fails to compile on Node 25 and the plugin is dead on arrival. CI stops at Node 22, so nothing catches it. | Declare a supported `engines` range and extend the CI matrix to 24 and 25. |
+| **Half the language support is unreachable** | `symbols.js` extracts symbols for 26 extensions — C, C++, Obj-C, Kotlin, Scala, `.mjs`, `.cjs`. The default `include` list globs 12. A C++ repo indexes its Markdown and nothing else. | Widen the shipped `include` list to match what the extractor already handles. |
+| **Changing embedding model corrupts recall silently** | The startup check compares vector *width* only. Swap one 1536-dimension model for another and nothing trips: old vectors survive, queries land in a different embedding space, results quietly get worse, no error anywhere. | Fingerprint `model + dimensions + prefixes` in `sync_state`; a mismatch forces a re-index. |
+
+### Speed and cost
+
+Nothing here is wrong, it is just wasteful. Most repos will not notice; large
+ones will.
+
+| Gap | What happens today | Fix |
+|---|---|---|
+| **GC walks the whole index** | Every Bash tool call, at most once a minute, `stat()`s every indexed file to find deletions. | Ask git which files disappeared instead of walking. |
+| **The sync window is a barrier** | Files are indexed in fixed slices, so the slowest file in a slice stalls the start of the next one. | A streaming worker pool that keeps N files in flight. |
+| **Unchanged chunks pay full price** | Identical chunks re-embed from scratch. Moving a file re-embeds all of it. | A content-addressed embedding cache keyed by chunk hash. |
+
+### Larger bets
+
+Both of these mean replacing regex with a parser, which is a real rewrite rather
+than a patch. Worth doing, not worth rushing.
+
+- **Scope-aware references.** `find_references` matches on name, so two methods
+  called `run` on different classes collapse into one result set. Tagging each
+  reference with its enclosing scope needs a real parse, most likely
+  tree-sitter.
+- **Parser-backed chunking.** Boundary detection is regex per language, covering
+  12 of them, and falls back to fixed-size chunks without telling you. A
+  tree-sitter grammar per language would make boundaries exact and the fallback
+  visible.
+
+### Not on the list
+
+The hybrid retrieval path — fusion weights, BM25 normalisation, the PageRank
+expansion described under [Retrieval quality](#retrieval-quality) — is
+deliberately absent. It is the part of Beacon that has been measured, and the
+shipped weights are the only configuration that held up on both prose and
+identifier queries. It stays as it is until a benchmark says otherwise.
+
 ## Examples
 
 See [EXAMPLES.md](EXAMPLES.md) for real-world use cases — intent-based search, codebase navigation, identifier tracking, and auto-sync — each with concrete before/after comparisons.
